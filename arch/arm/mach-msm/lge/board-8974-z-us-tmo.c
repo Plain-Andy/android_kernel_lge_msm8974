@@ -20,9 +20,6 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/memory.h>
-#ifdef CONFIG_ANDROID_PMEM
-#include <linux/android_pmem.h>
-#endif
 #include <linux/regulator/machine.h>
 #include <linux/regulator/krait-regulator.h>
 #include <linux/msm_tsens.h>
@@ -43,7 +40,6 @@
 #include <mach/rpm-smd.h>
 #include <mach/rpm-regulator-smd.h>
 #include <mach/socinfo.h>
-#include <mach/msm_smem.h>
 #include <mach/msm_bus_board.h>
 #include "../board-dt.h"
 #include "../clock.h"
@@ -54,6 +50,15 @@
 #include "../platsmp.h"
 #include <mach/board_lge.h>
 
+#if defined(CONFIG_LCD_KCAL)
+/*             
+                          
+                                
+*/
+#include <linux/module.h>
+#include "../../../../drivers/video/msm/mdss/mdss_fb.h"
+extern int update_preset_lcdc_lut(void);
+#endif /* CONFIG_LCD_KCAL */
 
 static struct memtype_reserve msm8974_reserve_table[] __initdata = {
 	[MEMTYPE_SMI] = {
@@ -105,6 +110,68 @@ void __init lge_add_lcd_misc_devices(void)
 }
 #endif
 
+#if defined(CONFIG_LCD_KCAL)
+/*             
+                          
+                                
+*/
+extern int g_kcal_r;
+extern int g_kcal_g;
+extern int g_kcal_b;
+
+int kcal_set_values(int kcal_r, int kcal_g, int kcal_b)
+{
+#if defined(CONFIG_MACH_MSM8974_A1)
+		int is_update = 0;
+
+		g_kcal_r = kcal_r < 248 ? 248 : kcal_r;
+		g_kcal_g = kcal_g < 248 ? 248 : kcal_g;
+		g_kcal_b = kcal_b < 252 ? 252 : kcal_b;
+
+		if (kcal_r < 248 || kcal_g < 248 || kcal_b < 252)
+			is_update = 1;
+		if (is_update)
+			update_preset_lcdc_lut();
+#else
+		g_kcal_r = kcal_r;
+		g_kcal_g = kcal_g;
+		g_kcal_b = kcal_b;
+#endif
+	return 0;
+}
+
+static int kcal_get_values(int *kcal_r, int *kcal_g, int *kcal_b)
+{
+	*kcal_r = g_kcal_r;
+	*kcal_g = g_kcal_g;
+	*kcal_b = g_kcal_b;
+	return 0;
+}
+
+static int kcal_refresh_values(void)
+{
+	return update_preset_lcdc_lut();
+}
+
+static struct kcal_platform_data kcal_pdata = {
+	.set_values = kcal_set_values,
+	.get_values = kcal_get_values,
+	.refresh_display = kcal_refresh_values
+};
+
+static struct platform_device kcal_platrom_device = {
+	.name   = "kcal_ctrl",
+	.dev = {
+		.platform_data = &kcal_pdata,
+	}
+};
+
+void __init lge_add_lcd_kcal_devices(void)
+{
+	pr_info(" KCAL_DEBUG : %s\n", __func__);
+	platform_device_register(&kcal_platrom_device);
+}
+#endif /* CONFIG_LCD_KCAL */
 /*
  * Used to satisfy dependencies for devices that need to be
  * run early or in a particular order. Most likely your device doesn't fall
@@ -112,14 +179,13 @@ void __init lge_add_lcd_misc_devices(void)
  * EPROBE_DEFER can satisfy most dependency problems.
  */
 /*                                                                    */
-#if defined(CONFIG_BCMDHD)
+#if defined(CONFIG_BCMDHD) || defined(CONFIG_BCMDHD_MODULE)
 extern void init_bcm_wifi(void);
 #endif
 /*                                                                    */
 
 void __init msm8974_add_drivers(void)
 {
-	msm_smem_init();
 	msm_init_modem_notifier_list();
 	msm_smd_init();
 	msm_rpm_driver_init();
@@ -137,16 +203,30 @@ void __init msm8974_add_drivers(void)
 	lge_add_lcd_misc_devices();
 #endif
 	lge_add_persistent_device();
-/*                                                                    */
-#if defined(CONFIG_BCMDHD)
-	init_bcm_wifi();
-#endif
-/*                                                                    */
 #ifdef CONFIG_LGE_QFPROM_INTERFACE
 	lge_add_qfprom_devices();
 #endif
 #ifdef CONFIG_LGE_ECO_MODE
 	lge_add_lge_kernel_devices();
+#endif
+#ifdef CONFIG_LGE_DIAG_ENABLE_SYSFS
+	lge_add_diag_devices();
+#endif
+/*                                                                    */
+#if defined(CONFIG_BCMDHD) || defined(CONFIG_BCMDHD_MODULE)
+	init_bcm_wifi();
+#endif
+/*                                                                    */
+#if defined(CONFIG_LCD_KCAL)
+/*             
+                          
+                                
+*/
+	lge_add_lcd_kcal_devices();
+#endif /* CONFIG_LCD_KCAL */
+
+#if defined(CONFIG_LGE_PM_BATTERY_ID_CHECKER)
+	lge_battery_id_devices();
 #endif
 }
 
@@ -168,6 +248,14 @@ static struct of_dev_auxdata msm8974_auxdata_lookup[] __initdata = {
 	OF_DEV_AUXDATA("qcom,msm-sdcc", 0xF9864000, \
 			"msm_sdcc.3", NULL),
 	OF_DEV_AUXDATA("qcom,msm-sdcc", 0xF98E4000, \
+			"msm_sdcc.4", NULL),
+	OF_DEV_AUXDATA("qcom,sdhci-msm", 0xF9824900, \
+			"msm_sdcc.1", NULL),
+	OF_DEV_AUXDATA("qcom,sdhci-msm", 0xF98A4900, \
+			"msm_sdcc.2", NULL),
+	OF_DEV_AUXDATA("qcom,sdhci-msm", 0xF9864900, \
+			"msm_sdcc.3", NULL),
+	OF_DEV_AUXDATA("qcom,sdhci-msm", 0xF98E4900, \
 			"msm_sdcc.4", NULL),
 	OF_DEV_AUXDATA("qcom,msm-rng", 0xF9BFF000, \
 			"msm_rng", NULL),
