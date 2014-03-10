@@ -117,10 +117,17 @@ config CPU_FREQ_DEFAULT_GOV_INTERACTIVE
 	  'interactive' governor for latency-sensitive workloads.
 
 config CPU_FREQ_DEFAULT_GOV_DANCEDANCE
-	bool "interactive"
+	bool "DanceDance"
 	select CPU_FREQ_GOV_DANCEDANCE
 
+config CPU_FREQ_DEFAULT_GOV_LULZACTIVEQ
+	bool "lulzactiveq"
+	select CPU_FREQ_GOV_LULZACTIVEQ
+
 endchoice
+
+config CPU_FREQ_GOV_LULZACTIVEQ
+	tristate "'lulzactiveq' governor"
 
 config CPU_FREQ_GOV_DANCEDANCE
 	tristate "'DanceDance' governor"
