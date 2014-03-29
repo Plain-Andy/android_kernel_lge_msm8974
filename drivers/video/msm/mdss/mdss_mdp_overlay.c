@@ -64,9 +64,9 @@ static int mdss_mdp_overlay_get(struct msm_fb_data_type *mfd,
 	return 0;
 }
 
-static int mdss_mdp_overlay_req_check(struct msm_fb_data_type *mfd,
-				      struct mdp_overlay *req,
-				      struct mdss_mdp_format_params *fmt)
+int mdss_mdp_overlay_req_check(struct msm_fb_data_type *mfd,
+			       struct mdp_overlay *req,
+			       struct mdss_mdp_format_params *fmt)
 {
 	u32 xres, yres;
 	u32 min_src_size, min_dst_size;
@@ -238,85 +238,6 @@ static int mdss_mdp_overlay_req_check(struct msm_fb_data_type *mfd,
 	return 0;
 }
 
-static int mdss_mdp_overlay_rotator_setup(struct msm_fb_data_type *mfd,
-					  struct mdp_overlay *req)
-{
-	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
-	struct mdss_mdp_rotator_session *rot;
-	struct mdss_mdp_format_params *fmt;
-	int ret = 0;
-	u32 bwc_enabled;
-
-	pr_debug("rot ctl=%u req id=%x\n", mdp5_data->ctl->num, req->id);
-
-	fmt = mdss_mdp_get_format_params(req->src.format);
-	if (!fmt) {
-		pr_err("invalid rot format %d\n", req->src.format);
-		return -EINVAL;
-	}
-
-	ret = mdss_mdp_overlay_req_check(mfd, req, fmt);
-	if (ret)
-		return ret;
-
-	if (req->id == MSMFB_NEW_REQUEST) {
-		rot = mdss_mdp_rotator_session_alloc();
-		rot->pid = current->tgid;
-		list_add(&rot->list, &mdp5_data->rot_proc_list);
-
-		if (!rot) {
-			pr_err("unable to allocate rotator session\n");
-			return -ENOMEM;
-		}
-	} else if (req->id & MDSS_MDP_ROT_SESSION_MASK) {
-		rot = mdss_mdp_rotator_session_get(req->id);
-
-		if (!rot) {
-			pr_err("rotator session=%x not found\n", req->id);
-			return -ENODEV;
-		}
-	} else {
-		pr_err("invalid rotator session id=%x\n", req->id);
-		return -EINVAL;
-	}
-
-	/* keep only flags of interest to rotator */
-	rot->flags = req->flags & (MDP_ROT_90 | MDP_FLIP_LR | MDP_FLIP_UD |
-				   MDP_SECURE_OVERLAY_SESSION);
-
-	bwc_enabled = req->flags & MDP_BWC_EN;
-	if (bwc_enabled  &&  !mdp5_data->mdata->has_bwc) {
-		pr_err("BWC is not supported in MDP version %x\n",
-			mdp5_data->mdata->mdp_rev);
-		rot->bwc_mode = 0;
-	} else {
-		rot->bwc_mode = bwc_enabled ? 1 : 0;
-	}
-	rot->format = fmt->format;
-	rot->img_width = req->src.width;
-	rot->img_height = req->src.height;
-	rot->src_rect.x = req->src_rect.x;
-	rot->src_rect.y = req->src_rect.y;
-	rot->src_rect.w = req->src_rect.w;
-	rot->src_rect.h = req->src_rect.h;
-
-	if (req->flags & MDP_DEINTERLACE) {
-		rot->flags |= MDP_DEINTERLACE;
-		rot->src_rect.h /= 2;
-		rot->src_rect.y /= 2;
-	}
-
-	ret = mdss_mdp_rotator_setup(rot);
-	if (ret == 0) {
-		req->id = rot->session_id;
-	} else {
-		pr_err("Unable to setup rotator session\n");
-		mdss_mdp_rotator_release(rot);
-	}
-
-	return ret;
-}
-
 static int _mdp_pipe_tune_perf(struct mdss_mdp_pipe *pipe)
 {
 	struct mdss_data_type *mdata = pipe->mixer->ctl->mdata;
@@ -350,7 +271,10 @@ static int __mdss_mdp_overlay_setup_scaling(struct mdss_mdp_pipe *pipe)
 
 	src = pipe->src.w >> pipe->horz_deci;
 	rc = mdss_mdp_calc_phase_step(src, pipe->dst.w, &pipe->phase_step_x);
-	if (rc) {
+	if (rc == -EOVERFLOW) {
+		/* overflow on horizontal direction is acceptable */
+		rc = 0;
+	} else if (rc) {
 		pr_err("Horizontal scaling calculation failed=%d! %d->%d\n",
 				rc, src, pipe->dst.w);
 		return rc;
@@ -358,13 +282,16 @@ static int __mdss_mdp_overlay_setup_scaling(struct mdss_mdp_pipe *pipe)
 
 	src = pipe->src.h >> pipe->vert_deci;
 	rc = mdss_mdp_calc_phase_step(src, pipe->dst.h, &pipe->phase_step_y);
-	if (rc) {
+	if ((rc == -EOVERFLOW) && (pipe->type == MDSS_MDP_PIPE_TYPE_VIG)) {
+		/* overflow on Qseed2 scaler is acceptable */
+		rc = 0;
+	} else if (rc) {
 		pr_err("Vertical scaling calculation failed=%d! %d->%d\n",
 				rc, src, pipe->dst.h);
 		return rc;
 	}
 
-	return 0;
+	return rc;
 }
 
 static int mdss_mdp_overlay_pipe_setup(struct msm_fb_data_type *mfd,
@@ -614,11 +541,14 @@ static int mdss_mdp_overlay_pipe_setup(struct msm_fb_data_type *mfd,
 
 	if (pipe->flags & MDP_DEINTERLACE) {
 		if (pipe->flags & MDP_SOURCE_ROTATED_90) {
+			pipe->src.x = DIV_ROUND_UP(pipe->src.x, 2);
+			pipe->src.x &= ~1;
 			pipe->src.w /= 2;
 			pipe->img_width /= 2;
 		} else {
 			pipe->src.h /= 2;
-			pipe->src.y /=2;
+			pipe->src.y = DIV_ROUND_UP(pipe->src.y, 2);
+			pipe->src.y &= ~1;
 		}
 	}
 
@@ -639,7 +569,6 @@ static int mdss_mdp_overlay_pipe_setup(struct msm_fb_data_type *mfd,
 	}
 
 	pipe->params_changed++;
-	pipe->has_buf = 0;
 
 	req->id = pipe->ndx;
 	req->horz_deci = pipe->horz_deci;
@@ -688,7 +617,7 @@ static int mdss_mdp_overlay_set(struct msm_fb_data_type *mfd,
 	}
 
 	if (req->flags & MDSS_MDP_ROT_ONLY) {
-		ret = mdss_mdp_overlay_rotator_setup(mfd, req);
+		ret = mdss_mdp_rotator_setup(mfd, req);
 	} else if (req->src.format == MDP_RGB_BORDERFILL) {
 		req->id = BORDERFILL_NDX;
 	} else {
@@ -707,7 +636,7 @@ static int mdss_mdp_overlay_set(struct msm_fb_data_type *mfd,
 	return ret;
 }
 
-static inline int mdss_mdp_overlay_get_buf(struct msm_fb_data_type *mfd,
+int mdss_mdp_overlay_get_buf(struct msm_fb_data_type *mfd,
 					   struct mdss_mdp_data *data,
 					   struct msmfb_data *planes,
 					   int num_planes,
@@ -737,7 +666,7 @@ static inline int mdss_mdp_overlay_get_buf(struct msm_fb_data_type *mfd,
 	return rc;
 }
 
-static inline int mdss_mdp_overlay_free_buf(struct mdss_mdp_data *data)
+int mdss_mdp_overlay_free_buf(struct mdss_mdp_data *data)
 {
 	int i;
 	for (i = 0; i < data->num_planes && data->p[i].len; i++)
@@ -758,6 +687,7 @@ static void mdss_mdp_overlay_cleanup(struct msm_fb_data_type *mfd)
 	list_for_each_entry_safe(pipe, tmp, &mdp5_data->pipes_cleanup,
 				cleanup_list) {
 		list_move(&pipe->cleanup_list, &destroy_pipes);
+		mdss_mdp_pipe_fetch_halt(pipe);
 		mdss_mdp_overlay_free_buf(&pipe->back_buf);
 		mdss_mdp_overlay_free_buf(&pipe->front_buf);
 		pipe->mfd = NULL;
@@ -1001,17 +931,7 @@ static int mdss_mdp_overlay_unset(struct msm_fb_data_type *mfd, int ndx)
 	pr_debug("unset ndx=%x\n", ndx);
 
 	if (ndx & MDSS_MDP_ROT_SESSION_MASK) {
-		struct mdss_mdp_rotator_session *rot;
-		rot = mdss_mdp_rotator_session_get(ndx);
-		if (rot) {
-			mdss_mdp_overlay_free_buf(&rot->src_buf);
-			mdss_mdp_overlay_free_buf(&rot->dst_buf);
-
-			rot->pid = 0;
-			if (!list_empty(&rot->list))
-				list_del_init(&rot->list);
-			ret = mdss_mdp_rotator_release(rot);
-		}
+		ret = mdss_mdp_rotator_unset(ndx);
 	} else {
 		ret = mdss_mdp_overlay_release(mfd, ndx);
 	}
@@ -1097,50 +1017,6 @@ static int mdss_mdp_overlay_play_wait(struct msm_fb_data_type *mfd,
 	return ret;
 }
 
-static int mdss_mdp_overlay_rotate(struct msm_fb_data_type *mfd,
-				   struct msmfb_overlay_data *req)
-{
-	struct mdss_mdp_rotator_session *rot;
-	int ret;
-	u32 flgs;
-
-	rot = mdss_mdp_rotator_session_get(req->id);
-	if (!rot) {
-		pr_err("invalid session id=%x\n", req->id);
-		return -ENOENT;
-	}
-
-	flgs = rot->flags & MDP_SECURE_OVERLAY_SESSION;
-
-	ret = mdss_mdp_rotator_busy_wait_ex(rot);
-	if (ret) {
-		pr_err("rotator busy wait error\n");
-		return ret;
-	}
-
-	mdss_mdp_overlay_free_buf(&rot->src_buf);
-	ret = mdss_mdp_overlay_get_buf(mfd, &rot->src_buf, &req->data, 1, flgs);
-	if (ret) {
-		pr_err("src_data pmem error\n");
-		return ret;
-	}
-
-	mdss_mdp_overlay_free_buf(&rot->dst_buf);
-	ret = mdss_mdp_overlay_get_buf(mfd, &rot->dst_buf,
-			&req->dst_data, 1, flgs);
-	if (ret) {
-		pr_err("dst_data pmem error\n");
-		goto dst_buf_fail;
-	}
-
-	ret = mdss_mdp_rotator_queue(rot);
-	if (ret)
-		pr_err("rotator queue error session id=%x\n", req->id);
-
-dst_buf_fail:
-	return ret;
-}
-
 static int mdss_mdp_overlay_queue(struct msm_fb_data_type *mfd,
 				  struct msmfb_overlay_data *req)
 {
@@ -1158,6 +1034,9 @@ static int mdss_mdp_overlay_queue(struct msm_fb_data_type *mfd,
 
 	pr_debug("ov queue pnum=%d\n", pipe->num);
 
+	if (pipe->flags & MDP_SOLID_FILL)
+		pr_warn("Unexpected buffer queue to a solid fill pipe\n");
+
 	flags = (pipe->flags & MDP_SECURE_OVERLAY_SESSION);
 
 	src_data = &pipe->back_buf;
@@ -1171,7 +1050,6 @@ static int mdss_mdp_overlay_queue(struct msm_fb_data_type *mfd,
 	if (IS_ERR_VALUE(ret)) {
 		pr_err("src_data pmem error\n");
 	}
-	pipe->has_buf = 1;
 	mdss_mdp_pipe_unmap(pipe);
 
 	return ret;
@@ -1236,7 +1114,7 @@ static int mdss_mdp_overlay_play(struct msm_fb_data_type *mfd,
 	if (req->id & MDSS_MDP_ROT_SESSION_MASK) {
 		mdss_mdp_overlay_force_dma_cleanup(mfd_to_mdata(mfd));
 
-		ret = mdss_mdp_overlay_rotate(mfd, req);
+		ret = mdss_mdp_rotator_play(mfd, req);
 	} else if (req->id == BORDERFILL_NDX) {
 		pr_debug("borderfill enable\n");
 		mdp5_data->borderfill_enable = true;
@@ -1411,7 +1289,6 @@ static void mdss_mdp_overlay_pan_display(struct msm_fb_data_type *mfd)
 	buf->p[0].addr += offset;
 	buf->p[0].len = fbi->fix.smem_len - offset;
 	buf->num_planes = 1;
-	pipe->has_buf = 1;
 	mdss_mdp_pipe_unmap(pipe);
 
 	if (fbi->var.xres > MAX_MIXER_WIDTH || mfd->split_display) {
@@ -1426,7 +1303,6 @@ static void mdss_mdp_overlay_pan_display(struct msm_fb_data_type *mfd)
 			goto pan_display_error;
 		}
 		pipe->back_buf = *buf;
-		pipe->has_buf = 1;
 		mdss_mdp_pipe_unmap(pipe);
 	}
 	mutex_unlock(&mdp5_data->ov_lock);
@@ -1445,15 +1321,26 @@ pan_display_error:
 static void mdss_mdp_overlay_handle_vsync(struct mdss_mdp_ctl *ctl,
 						ktime_t t)
 {
-	struct msm_fb_data_type *mfd = ctl->mfd;
-	struct mdss_overlay_private *mdp5_data;
+	struct msm_fb_data_type *mfd = NULL;
+	struct mdss_overlay_private *mdp5_data = NULL;
 
+	if (!ctl) {
+		pr_err("ctl is NULL\n");
+		return;
+	}
+
+	mfd = ctl->mfd;
 	if (!mfd || !mfd->mdp.private1) {
 		pr_warn("Invalid handle for vsync\n");
 		return;
 	}
 
 	mdp5_data = mfd_to_mdp5_data(mfd);
+	if (!mdp5_data) {
+		pr_err("mdp5_data is NULL\n");
+		return;
+	}
+
 	pr_debug("vsync on fb%d play_cnt=%d\n", mfd->index, ctl->play_cnt);
 
 	mdp5_data->vsync_time = t;
@@ -2086,8 +1973,12 @@ static int mdss_mdp_overlay_on(struct msm_fb_data_type *mfd)
 	if (!mfd->panel_info->cont_splash_enabled) {
 		rc = mdss_mdp_overlay_start(mfd);
 		if (!IS_ERR_VALUE(rc) && (mfd->panel_info->type != DTV_PANEL) &&
-			(mfd->panel_info->type != WRITEBACK_PANEL))
+			(mfd->panel_info->type != WRITEBACK_PANEL)) {
 			rc = mdss_mdp_overlay_kickoff(mfd);
+
+			if (mfd->panel_info->type == MIPI_CMD_PANEL)
+				mdss_mdp_display_wait4pingpong(mdp5_data->ctl);
+		}
 	} else {
 		rc = mdss_mdp_ctl_setup(mdp5_data->ctl);
 		if (rc)
