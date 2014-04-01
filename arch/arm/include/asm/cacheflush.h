@@ -233,6 +233,7 @@ extern void copy_to_user_page(struct vm_area_struct *, struct page *,
 static inline void __flush_icache_all(void)
 {
 	__flush_icache_preferred();
+	dsb();
 }
 
 /*
@@ -381,5 +382,10 @@ static inline void flush_cache_vunmap(unsigned long start, unsigned long end)
 	if (!cache_is_vipt_nonaliasing())
 		flush_cache_all();
 }
+
+int set_memory_ro(unsigned long addr, int numpages);
+int set_memory_rw(unsigned long addr, int numpages);
+int set_memory_x(unsigned long addr, int numpages);
+int set_memory_nx(unsigned long addr, int numpages);
 
 #endif

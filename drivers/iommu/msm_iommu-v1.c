@@ -47,15 +47,18 @@ static DEFINE_MUTEX(msm_iommu_lock);
 
 static int __enable_regulators(struct msm_iommu_drvdata *drvdata)
 {
-	int ret = regulator_enable(drvdata->gdsc);
-	if (ret)
-		goto fail;
+	int ret = 0;
+	if (drvdata->gdsc) {
+		ret = regulator_enable(drvdata->gdsc);
+		if (ret)
+			goto fail;
 
-	if (drvdata->alt_gdsc)
-		ret = regulator_enable(drvdata->alt_gdsc);
+		if (drvdata->alt_gdsc)
+			ret = regulator_enable(drvdata->alt_gdsc);
 
-	if (ret)
-		regulator_disable(drvdata->gdsc);
+		if (ret)
+			regulator_disable(drvdata->gdsc);
+	}
 fail:
 	return ret;
 }
@@ -65,7 +68,8 @@ static void __disable_regulators(struct msm_iommu_drvdata *drvdata)
 	if (drvdata->alt_gdsc)
 		regulator_disable(drvdata->alt_gdsc);
 
-	regulator_disable(drvdata->gdsc);
+	if (drvdata->gdsc)
+		regulator_disable(drvdata->gdsc);
 }
 
 static int apply_bus_vote(struct msm_iommu_drvdata *drvdata, unsigned int vote)
@@ -662,6 +666,7 @@ static int msm_iommu_map(struct iommu_domain *domain, unsigned long va,
 	if (ret)
 		goto fail;
 
+	ret = __flush_iotlb_va(domain, va);
 fail:
 	mutex_unlock(&msm_iommu_lock);
 	return ret;
@@ -711,6 +716,7 @@ static int msm_iommu_map_range(struct iommu_domain *domain, unsigned int va,
 	if (ret)
 		goto fail;
 
+	__flush_iotlb(domain);
 fail:
 	mutex_unlock(&msm_iommu_lock);
 	return ret;

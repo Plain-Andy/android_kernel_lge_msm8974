@@ -1682,6 +1682,13 @@ static int mmc_blk_update_interrupted_req(struct mmc_card *card,
 		 ext_csd[EXT_CSD_CORRECTLY_PRG_SECTORS_NUM + 2] << 16 |
 		 ext_csd[EXT_CSD_CORRECTLY_PRG_SECTORS_NUM + 3] << 24);
 
+	/*
+	 * skip packed command header (1 sector) included by the counter but not
+	 * actually written to the NAND
+	 */
+	if (correctly_done >= card->ext_csd.data_sector_size)
+		correctly_done -= card->ext_csd.data_sector_size;
+
 	list_for_each_entry(prq, &mq_rq->packed_list, queuelist) {
 		if ((correctly_done - (int)blk_rq_bytes(prq)) < 0) {
 			/* prq is not successfull */
@@ -2825,8 +2832,11 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
  err_putdisk:
 	put_disk(md->disk);
  err_kfree:
+	if (!subname)
+		__clear_bit(md->name_idx, name_use);
 	kfree(md);
  out:
+	__clear_bit(devidx, dev_use);
 	return ERR_PTR(ret);
 }
 
